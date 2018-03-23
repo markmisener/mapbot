@@ -1,17 +1,21 @@
 import os
-import time
 import re
-from slackclient import SlackClient
-from mapbox import Geocoder, Static
+import requests
+import time
 import json
 
+from mapbox import Geocoder
+from slackclient import SlackClient
 
 # instantiate Slack client
 slack_client = SlackClient(os.environ.get('SLACK_BOT_TOKEN'))
 
-# instantiate Mapbox clients
+# instantiate Mapbox geocoding client
 geocoder = Geocoder()
-static = Static()
+
+# get mapbox access token from env
+MAPBOX_ACCESS_TOKEN = os.environ.get('MAPBOX_ACCESS_TOKEN')
+BASE_URL = 'https://api.mapbox.com'
 
 # mapbot's user ID in Slack: value is assigned after the bot starts up
 mapbot_id = None
@@ -52,6 +56,7 @@ def handle_command(command, channel):
 
     # Finds and executes the given command, filling in response
     response = None
+    attachment = None
 
     if command.startswith("locate"):
         query_list = command.split(" ")
@@ -71,28 +76,64 @@ def handle_command(command, channel):
         attachments=attachment
     )
 
+def handle_failure(query):
+    """
+        Handle any failed searches
+    """
+    return "Sorry, we're having trouble finding {query}. Can you be more specific?".format(query=query)
+
 def get_static_map(query):
+    """
+        Generate a static map image with a marker
+    """
     latlon = get_coords(query)
     if latlon:
-        response = static.image('mapbox.satellite', lon=latlon[0], lat=latlon[1], z=12)
-        if response.status_code:
-            with open('/tmp/map.png', 'wb') as output:
-                _ = output.write(response.content)
-            return "Success!", get_attachments()
-        else:
-            return "Sorry, we're having trouble finding {query}".format(query=query)
-    else:
-        return "Sorry, we're having trouble finding {query}".format(query=query)
+        lat = latlon[0]
+        lon = latlon[1]
+        static_url = '/styles/v1/mapbox/streets-v10/static'
+        marker_url = '/pin-s-heart+285A98({lat},{lon})'.format(lat=lat,lon=lon)
+        location_url = '/{lat},{lon},14,0,60/600x600?access_token={token}'.format(lat=lat,lon=lon,token=MAPBOX_ACCESS_TOKEN)
 
-def get_attachments():
-    image_url = "http://www.catster.com/wp-content/uploads/2017/08/A-fluffy-cat-looking-funny-surprised-or-concerned.jpg"
-    return [{"title": "Cat", "image_url": image_url}]
+        # create full url
+        request_url = BASE_URL + static_url + marker_url + location_url
+        response = requests.get(request_url)
+        if response.status_code:
+            address = get_address(query)
+            if address:
+                return "We found {query} at {address}".format(query=query, address=address), generate_attachments(request_url)
+            else:
+                return handle_failure(query), None
+        else:
+            return handle_failure(query), None
+    else:
+        return handle_failure(query), None
+
+def generate_attachments(url):
+    """
+        Generate the attachment for the Slack message
+    """
+    return [{"title": "", "image_url": url}]
 
 def get_coords(query):
+    """
+        Return the coordinates of the first query result
+    """
     response = geocoder.forward(query)
-    if response.status_code:
+    if response.status_code and len(response.geojson()['features']) >= 1:
         first = response.geojson()['features'][0]
         return first['geometry']['coordinates']
+    else:
+        return handle_failure(query)
+
+def get_address(query):
+    """
+        Return the place name of the first query result
+    """
+    response = geocoder.forward(query)
+    if response.status_code and len(response.geojson()['features']) >= 1:
+        first = response.geojson()['features'][0]
+        print(first['place_name'])
+        return first['place_name']
     else:
         return None
 
