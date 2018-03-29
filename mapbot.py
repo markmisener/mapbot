@@ -1,3 +1,7 @@
+"""
+built off work here: https://www.fullstackpython.com/blog/build-first-slack-bot-python.html
+"""
+
 import os
 import re
 import requests
@@ -7,23 +11,28 @@ import json
 from mapbox import Geocoder
 from slackclient import SlackClient
 
-# instantiate Slack client
+# instantiate Slack client and Mapbox geocoding client
 slack_client = SlackClient(os.environ.get('SLACK_BOT_TOKEN'))
-
-# instantiate Mapbox geocoding client
 geocoder = Geocoder()
 
-# get mapbox access token from env
+# get mapbox access token from environement variable
 MAPBOX_ACCESS_TOKEN = os.environ.get('MAPBOX_ACCESS_TOKEN')
-BASE_URL = 'https://api.mapbox.com'
 
 # mapbot's user ID in Slack: value is assigned after the bot starts up
 mapbot_id = None
 
 # constants
 RTM_READ_DELAY = 1 # 1 second delay between reading from RTM
-command = "locate"
+EXAMPLE_COMMAND = "map Washington, DC"
 MENTION_REGEX = "^<@(|[WU].+?)>(.*)"
+BASE_URL = 'https://api.mapbox.com'
+STATIC_URL = BASE_URL + '/styles/v1/mapbox/streets-v10/static'
+
+def handle_failure(query):
+    """
+        Handle any failed searches
+    """
+    return "Sorry, we're having trouble finding {query}. Can you be more specific?".format(query=query)
 
 def parse_bot_commands(slack_events):
     """
@@ -52,7 +61,7 @@ def handle_command(command, channel):
         Executes bot command if the command is known
     """
     # Default response is help text for the user
-    default_response = "Not sure what you mean. Try *{}*.".format(command)
+    default_response = "Not sure what you mean. Try *{}*.".format(EXAMPLE_COMMAND)
 
     # Finds and executes the given command, filling in response
     response = None
@@ -76,33 +85,26 @@ def handle_command(command, channel):
         attachments=attachment
     )
 
-def handle_failure(query):
-    """
-        Handle any failed searches
-    """
-    return "Sorry, we're having trouble finding {query}. Can you be more specific?".format(query=query)
-
 def get_static_map(query):
     """
         Generate a static map image with a marker
     """
+    # get center coordinates
     latlon = get_coords(query)
-    if latlon:
-        lat = latlon[0]
-        lon = latlon[1]
-        static_url = '/styles/v1/mapbox/streets-v10/static'
-        marker_url = '/pin-s-heart+285A98({lat},{lon})'.format(lat=lat,lon=lon)
-        location_url = '/{lat},{lon},14,0,60/600x600?access_token={token}'.format(lat=lat,lon=lon,token=MAPBOX_ACCESS_TOKEN)
 
-        # create full url
-        request_url = BASE_URL + static_url + marker_url + location_url
-        response = requests.get(request_url)
-        if response.status_code:
-            address = get_address(query)
-            if address:
-                return "We found {query} at {address}".format(query=query, address=address), generate_attachments(request_url)
-            else:
-                return handle_failure(query), None
+    # construct url
+    marker_url = '/pin-s-heart+285A98({lat},{lon})'.format(lat=latlon[0],lon=latlon[1])
+    location_url = '/{lat},{lon},14,0,60/600x600?access_token={token}'.format(lat=latlon[0],lon=latlon[1],token=MAPBOX_ACCESS_TOKEN)
+
+    # generate url and make request
+    request_url = STATIC_URL + marker_url + location_url
+    response = requests.get(request_url)
+
+    if response.status_code:
+        address = get_address(query)
+        attachment = generate_attachments(request_url)
+        if address and attachment:
+            return "We found {query} at {address}".format(query=query, address=address), attachment
         else:
             return handle_failure(query), None
     else:
